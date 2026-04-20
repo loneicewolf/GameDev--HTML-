@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>G2 - Shooting Gallery</title>
+    <style>
+        body { margin: 0; background: #050505; color: white; font-family: monospace; overflow: hidden; cursor: crosshair; }
+        #ui { position: absolute; padding: 20px; font-size: 20px; }
+        .enemy { 
+            position: absolute; 
+            width: 30px; height: 30px; 
+            background: transparent; 
+            border: 2px solid white; 
+            display: flex; align-items: center; justify-content: center;
+        }
+        .enemy::before { content: '+'; color: red; }
+    </style>
+</head>
+<body>
+    <div id="ui">Targets Neutralized: <span id="score">0</span> | <a href="index.html" style="color: grey;">Exit</a></div>
+
+    <script>
+        let score = 0;
+        const scoreDisplay = document.getElementById('score');
+
+        function spawnEnemy() {
+            const enemy = document.createElement('div');
+            enemy.className = 'enemy';
+            enemy.style.left = Math.random() * (window.innerWidth - 40) + 'px';
+            enemy.style.top = Math.random() * (window.innerHeight - 40) + 'px';
+            
+            enemy.onclick = (e) => {
+                e.stopPropagation();
+                score++;
+                scoreDisplay.innerText = score;
+                enemy.remove();
+                spawnEnemy(); // Spawn next
+            };
+            
+            document.body.appendChild(enemy);
+        }
+
+        // Start with 3 targets
+        spawnEnemy();
+        spawnEnemy();
+        spawnEnemy();
+    </script>
+</body>
+</html>
