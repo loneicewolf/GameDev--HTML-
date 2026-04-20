@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>G3 - Heavy Armor Division: Tactical</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; overflow: hidden; font-family: 'Courier New', monospace; color: #0f0; }
+        canvas { display: block; background: #050505; border: 4px solid #333; margin: 10px auto; cursor: crosshair; }
+        #ui { text-align: center; padding: 10px; background: #000; border-bottom: 2px solid #ff0000; font-size: 14px; }
+        .stat-group { margin: 0 15px; display: inline-block; }
+        #dashBar { width: 80px; height: 10px; background: #222; display: inline-block; border: 1px solid #555; vertical-align: middle; }
+        #dashProgress { width: 100%; height: 100%; background: #00ffff; }
+        .toggle-btn { background: #333; color: #0f0; border: 1px solid #0f0; padding: 2px 10px; cursor: pointer; margin-left: 10px; }
+        .active { background: #0f0; color: #000; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="stat-group">HP: <span id="hpDisplay" style="color:#0f0">100%</span></div>
+        <div class="stat-group">DASH: <div id="dashBar"><div id="dashProgress"></div></div></div>
+        <div class="stat-group">CANNON: <span id="ammoName" style="color:#ffd700">YELLOW</span> (<span id="ammoCount">20</span>)</div>
+        <div class="stat-group">SCORE: <span id="score">0</span></div>
+        <button id="easyModeBtn" class="toggle-btn" onclick="toggleEasyMode()">EASY MODE: OFF</button>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 900; canvas.height = 600;
+
+        // --- Audio ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            const now = audioCtx.currentTime;
+            if (type === 'mg') {
+                osc.type = 'sawtooth'; osc.frequency.setValueAtTime(200, now);
+                gain.gain.setValueAtTime(0.02, now); gain.gain.linearRampToValueAtTime(0, now + 0.05);
+                osc.start(now); osc.stop(now + 0.05);
+            } else if (type === 'cannon') {
+                osc.type = 'square'; osc.frequency.setValueAtTime(80, now);
+                gain.gain.setValueAtTime(0.1, now); gain.gain.linearRampToValueAtTime(0, now + 0.3);
+                osc.start(now); osc.stop(now + 0.3);
+            } else if (type === 'dash') {
+                osc.type = 'sine'; osc.frequency.setValueAtTime(300, now);
+                osc.frequency.exponentialRampToValueAtTime(600, now + 0.2);
+                gain.gain.setValueAtTime(0.1, now); gain.gain.linearRampToValueAtTime(0, now + 0.2);
+                osc.start(now); osc.stop(now + 0.2);
+            }
+        }
+
+        // --- Config & State ---
+        let easyMode = false;
+        let score = 0;
+        let ammoType = 1; 
+        const inventory = { 1: 20, 2: 15, 3: 10 };
+        const keys = {};
+        const mouse = { x: 0, y: 0, left: false, right: false };
+        const bullets = [];
+        const enemies = [];
+        const particles = [];
+        const crates = [];
+        const walls = [
+            { x: 150, y: 150, w: 200, h: 30 }, { x: 550, y: 150, w: 200, h: 30 },
+            { x: 150, y: 420, w: 200, h: 30 }, { x: 550, y: 420, w: 200, h: 30 },
+            { x: 430, y: 250, w: 40, h: 100 }
+        ];
+
+        // FIXED SPAWN: Moved to bottom-left away from the central wall
+        const player = { 
+            x: 60, y: 540, size: 15, hp: 100, 
+            speed: 2.2, cannonTimer: 0, mgTimer: 0,
+            dashCooldown: 0, isDashing: 0
+        };
+
+        function toggleEasyMode() {
+            easyMode = !easyMode;
+            const btn = document.getElementById('easyModeBtn');
+            btn.innerText = `EASY MODE: ${easyMode ? 'ON' : 'OFF'}`;
+            btn.classList.toggle('active');
+        }
+
+        class Particle {
+            constructor(x, y, color, scale) {
+                this.x = x; this.y = y; this.color = color;
+                this.vx = (Math.random() - 0.5) * 5 * scale;
+                this.vy = (Math.random() - 0.5) * 5 * scale;
+                this.life = 1.0; this.decay = Math.random() * 0.05 + 0.02;
+            }
+            update() { this.x += this.vx; this.y += this.vy; this.life -= this.decay; }
+            draw() {
+                ctx.globalAlpha = this.life; ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, 2, 2); ctx.globalAlpha = 1;
+            }
+        }
+
+        function explode(x, y, color, count, scale) {
+            for(let i=0; i<count; i++) particles.push(new Particle(x, y, color, scale));
+        }
+
+        // --- Inputs ---
+        window.onkeydown = (e) => { 
+            keys[e.key.toLowerCase()] = true;
+            if(['1','2','3'].includes(e.key)) { ammoType = parseInt(e.key); updateUI(); }
+        };
+        window.onkeyup = (e) => keys[e.key.toLowerCase()] = false;
+        canvas.onmousemove = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+        };
+        canvas.onmousedown = (e) => { if(e.button === 0) mouse.left = true; if(e.button === 2) mouse.right = true; };
+        canvas.onmouseup = (e) => { if(e.button === 0) mouse.left = false; if(e.button === 2) mouse.right = false; };
+        canvas.oncontextmenu = (e) => e.preventDefault();
+
+        function updateUI() {
+            const colors = { 1: '#ffd700', 2: '#00ff00', 3: '#ff0000' };
+            const names = { 1: 'YELLOW', 2: 'GREEN', 3: 'RED' };
+            document.getElementById('ammoName').style.color = colors[ammoType];
+            document.getElementById('ammoName').innerText = names[ammoType];
+            document.getElementById('ammoCount').innerText = inventory[ammoType];
+            document.getElementById('hpDisplay').innerText = Math.max(0, Math.ceil(player.hp)) + '%';
+            document.getElementById('score').innerText = score;
+        }
+
+        function spawnEnemy() {
+            enemies.push({ 
+                x: Math.random() < 0.5 ? 50 : canvas.width - 50, 
+                y: Math.random() < 0.5 ? 50 : canvas.height - 50, 
+                size: 15, hp: 40, shootTimer: 100 
+            });
+        }
+
+        function spawnCrate() {
+            crates.push({ x: Math.random()*800+50, y: Math.random()*500+50, type: Math.floor(Math.random()*3)+1 });
+        }
+
+        function drawTank(x, y, angle, colorMain, colorDome) {
+            ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+            ctx.fillStyle = '#111'; ctx.fillRect(-15, -14, 30, 28);
+            ctx.fillStyle = colorMain; ctx.fillRect(-12, -12, 24, 24);
+            ctx.fillStyle = '#666'; ctx.fillRect(0, -2, 22, 4);
+            ctx.fillStyle = colorDome; ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI*2); ctx.fill();
+            ctx.restore();
+        }
+
+        function rectIntersect(x1, y1, w1, h1, x2, y2, w2, h2) {
+            return x2 < x1 + w1 && x2 + w2 > x1 && y2 < y1 + h1 && y2 + h2 > y1;
+        }
+
+        // --- Easy Mode Tracer Logic ---
+        function drawTracer(startX, startY, angle, type) {
+            let tx = startX, ty = startY;
+            let tvx = Math.cos(angle) * 7;
+            let tvy = Math.sin(angle) * 7;
+            let bounces = (type === 2) ? 3 : 0;
+            
+            ctx.beginPath();
+            ctx.moveTo(tx, ty);
+            ctx.strokeStyle = type === 1 ? 'rgba(255,215,0,0.3)' : type === 2 ? 'rgba(0,255,0,0.3)' : 'rgba(255,0,0,0.3)';
+            ctx.setLineDash([5, 5]);
+
+            for (let step = 0; step < 200; step++) {
+                tx += tvx; ty += tvy;
+                let hit = false;
+                
+                // Wall check
+                walls.forEach(w => {
+                    if (rectIntersect(tx-1, ty-1, 2, 2, w.x, w.y, w.w, w.h)) {
+                        if (bounces > 0) {
+                            if (tx <= w.x || tx >= w.x + w.w) tvx *= -1; else tvy *= -1;
+                            bounces--;
+                            ctx.lineTo(tx, ty);
+                        } else hit = true;
+                    }
+                });
+
+                if (hit || tx < 0 || tx > canvas.width || ty < 0 || ty > canvas.height) {
+                    ctx.lineTo(tx, ty);
+                    break;
+                }
+            }
+            ctx.lineTo(tx, ty);
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset
+        }
+
+        function update() {
+            if (player.hp <= 0) return;
+
+            // Dash Management
+            if (keys['shift'] && player.dashCooldown <= 0) {
+                player.isDashing = 12; player.dashCooldown = 120;
+                playSound('dash'); explode(player.x, player.y, '#0ff', 15, 0.8);
+            }
+            if (player.isDashing > 0) player.isDashing--;
+            if (player.dashCooldown > 0) {
+                player.dashCooldown--;
+                document.getElementById('dashProgress').style.width = (1 - player.dashCooldown/120)*100 + '%';
+            }
+
+            // Movement Logic
+            let moveSpeed = player.isDashing > 0 ? player.speed * 3 : player.speed;
+            let nx = player.x, ny = player.y;
+            if (keys['w']) ny -= moveSpeed; if (keys['s']) ny += moveSpeed;
+            if (keys['a']) nx -= moveSpeed; if (keys['d']) nx += moveSpeed;
+            
+            let blockX = false, blockY = false;
+            walls.forEach(w => {
+                if (rectIntersect(nx-15, player.y-15, 30, 30, w.x, w.y, w.w, w.h)) blockX = true;
+                if (rectIntersect(player.x-15, ny-15, 30, 30, w.x, w.y, w.w, w.h)) blockY = true;
+            });
+            if (!blockX) player.x = nx; if (!blockY) player.y = ny;
+
+            // Firing
+            if (player.cannonTimer > 0) player.cannonTimer--;
+            if (player.mgTimer > 0) player.mgTimer--;
+            const aim = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+
+            if (mouse.left && player.cannonTimer <= 0 && inventory[ammoType] > 0) {
+                bullets.push({ x: player.x, y: player.y, vx: Math.cos(aim)*7, vy: Math.sin(aim)*7, type: ammoType, owner: 'player', bounces: ammoType===2?3:0, size: 4 });
+                inventory[ammoType]--; player.cannonTimer = 40; playSound('cannon'); updateUI();
+            }
+            if (mouse.right && player.mgTimer <= 0) {
+                const spread = (Math.random() - 0.5) * 0.1;
+                bullets.push({ x: player.x, y: player.y, vx: Math.cos(aim + spread)*10, vy: Math.sin(aim + spread)*10, type: 'mg', owner: 'player', size: 2 });
+                player.mgTimer = 6; playSound('mg');
+            }
+
+            // AI Behavior
+            enemies.forEach(en => {
+                const dist = Math.hypot(player.x - en.x, player.y - en.y);
+                const ang = Math.atan2(player.y - en.y, player.x - en.x);
+                if (dist > 180) { en.x += Math.cos(ang) * 1.2; en.y += Math.sin(ang) * 1.2; }
+                
+                en.shootTimer--;
+                if (en.shootTimer <= 0 && dist < 450) {
+                    bullets.push({ x: en.x, y: en.y, vx: Math.cos(ang)*4.5, vy: Math.sin(ang)*4.5, type: 3, owner: 'enemy', size: 4 });
+                    en.shootTimer = 140;
+                }
+            });
+
+            // Bullet Collision
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                let b = bullets[i]; b.x += b.vx; b.y += b.vy;
+                let dead = false;
+
+                if (b.x<0 || b.x>canvas.width || b.y<0 || b.y>canvas.height) dead = true;
+                
+                walls.forEach(w => {
+                    if (rectIntersect(b.x-2, b.y-2, 4, 4, w.x, w.y, w.w, w.h)) {
+                        if (b.bounces > 0) {
+                             if (b.x <= w.x || b.x >= w.x + w.w) b.vx *= -1; else b.vy *= -1;
+                             b.bounces--; explode(b.x, b.y, '#0f0', 3, 0.4); 
+                        } else dead = true;
+                    }
+                });
+
+                if (b.owner === 'enemy' && Math.hypot(b.x - player.x, b.y - player.y) < 15) {
+                    player.hp -= 10; dead = true; explode(player.x, player.y, '#f00', 10, 1.2); updateUI();
+                }
+
+                enemies.forEach((en, eIdx) => {
+                    if (b.owner === 'player' && Math.hypot(b.x - en.x, b.y - en.y) < 15) {
+                        en.hp -= (b.type === 'mg' ? 8 : 40); dead = true;
+                        if (en.hp <= 0) { 
+                            explode(en.x, en.y, '#ff0', 25, 2); enemies.splice(eIdx, 1); 
+                            score += 100; spawnEnemy(); if(Math.random()<0.45) spawnCrate(); updateUI();
+                        }
+                    }
+                });
+                if (dead) bullets.splice(i, 1);
+            }
+
+            crates.forEach((c, i) => {
+                if (Math.hypot(player.x - c.x, player.y - c.y) < 20) {
+                    inventory[c.type] += 10; crates.splice(i, 1); updateUI();
+                    explode(player.x, player.y, '#0f0', 10, 1);
+                }
+            });
+
+            particles.forEach((p, i) => { p.update(); if (p.life <= 0) particles.splice(i, 1); });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            walls.forEach(w => { 
+                ctx.fillStyle = '#222'; ctx.fillRect(w.x, w.y, w.w, w.h); 
+                ctx.strokeStyle = '#444'; ctx.strokeRect(w.x, w.y, w.w, w.h);
+            });
+            
+            crates.forEach(c => { 
+                const col = ['','#ffd700','#00ff00','#ff0000'][c.type];
+                ctx.fillStyle = col; ctx.fillRect(c.x-8, c.y-8, 16, 16); 
+                ctx.strokeStyle = '#fff'; ctx.strokeRect(c.x-8, c.y-8, 16, 16);
+            });
+
+            particles.forEach(p => p.draw());
+
+            enemies.forEach(en => {
+                drawTank(en.x, en.y, Math.atan2(player.y-en.y, player.x-en.x), '#633', '#944');
+                ctx.fillStyle = '#f00'; ctx.fillRect(en.x-10, en.y-22, 20, 3);
+                ctx.fillStyle = '#0f0'; ctx.fillRect(en.x-10, en.y-22, (en.hp/40)*20, 3);
+            });
+
+            if (player.hp > 0) {
+                const aimAngle = Math.atan2(mouse.y-player.y, mouse.x-player.x);
+                if (easyMode) drawTracer(player.x, player.y, aimAngle, ammoType);
+                drawTank(player.x, player.y, aimAngle, '#345', '#567');
+            } else {
+                ctx.fillStyle = 'red'; ctx.font = '30px monospace'; ctx.textAlign = 'center';
+                ctx.fillText('MISSION FAILED - ARMOR BREACHED', canvas.width/2, canvas.height/2);
+            }
+
+            bullets.forEach(b => { 
+                ctx.fillStyle = b.owner === 'player' ? b.color || '#0ff' : '#f44'; 
+                ctx.beginPath(); ctx.arc(b.x, b.y, b.size, 0, Math.PI*2); ctx.fill(); 
+            });
+
+            update(); requestAnimationFrame(draw);
+        }
+
+        spawnEnemy(); spawnEnemy(); updateUI(); draw();
+    </script>
+</body>
+</html>
