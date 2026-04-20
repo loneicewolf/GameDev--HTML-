@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <title>TrackPoint Target Practice</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; overflow: hidden; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; color: #ff0000; font-weight: bold; }
+        #target { 
+            position: absolute; 
+            width: 40px; height: 40px; 
+            background: #ff0000; border-radius: 50%; 
+            box-shadow: 0 0 15px #ff0000;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">Score: <span id="score">36</span></div>
+    <div id="target" style="left: 1025.4px; top: 183.098px;"></div>
+
+    <script>
+        const target = document.getElementById('target');
+        const scoreDisplay = document.getElementById('score');
+        let score = 0;
+
+        function moveTarget() {
+            const x = Math.random() * (window.innerWidth - 50);
+            const y = Math.random() * (window.innerHeight - 50);
+            target.style.left = x + 'px';
+            target.style.top = y + 'px';
+        }
+
+        target.addEventListener('mouseover', () => {
+            score++;
+            scoreDisplay.innerText = score;
+            moveTarget();
+        });
+
+        moveTarget();
+    </script>
+
+
+</body></html>
